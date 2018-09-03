@@ -10,24 +10,31 @@
 //! After as room has been joined, messages can be sent to the room and new
 //! messages can be fetched from from the room.
 
-#[macro_use]
-extern crate serde_derive;
+#[macro_use] extern crate serde_derive;
 extern crate reqwest;
 extern crate serde_json;
-#[macro_use]
-extern crate url;
+#[macro_use] extern crate url;
+extern crate failure;
+#[macro_use] extern crate failure_derive;
+
 
 use std::rc::Rc;
 use std::collections::HashMap;
 use serde_json::{Value};
-
+use failure::Error;
 use url::percent_encoding::{utf8_percent_encode, USERINFO_ENCODE_SET,  PATH_SEGMENT_ENCODE_SET};
+
 define_encode_set! {
     pub ACCESS_TOKEN_ENCODE_SET = [USERINFO_ENCODE_SET] | {
         '%', '&'
     }
 }
 
+#[derive(Debug, Fail)]
+enum DementiaError {
+    #[fail(display = "Http Error code: {}, body: {} ", _0, _1)]
+    Http(reqwest::StatusCode, String),
+}
 
 #[derive(Deserialize, Debug)]
 struct JoinInfo {
@@ -286,9 +293,8 @@ impl Homeserver {
     /// to only create the room object.
     ///
     /// If the room cannot be joined, `None` is returned
-    pub fn join_room(&self, room_name : String) -> Option<Room> {
+    pub fn join_room(&self, room_name : String) -> Result<Room, Error> {
         let map : HashMap<String,String> = HashMap::new();
-        
         let mut res = self.client.post(
             &format!("{}{}{}{}{}",
                     self.info.server_name,
@@ -297,18 +303,17 @@ impl Homeserver {
                     "?access_token=",
                     utf8_percent_encode(&self.info.access_token, ACCESS_TOKEN_ENCODE_SET).to_string()))
             .json(&map)
-            .send()
-            .unwrap();
-        let info: Result<JoinInfo, _> = res.json();
-        match info {
-            Ok(info) => Some(Room {
-                id: info.room_id,
-                latest_since: None,
-                client : self.client.clone(),
-                info : self.info.clone(),
-            }),
-            _ => None
-        }        
+            .send()?;
+        if res.status() != reqwest::StatusCode::Ok {
+            Err(DementiaError::Http(res.status(), res.text()?))?
+        }
+        let info: JoinInfo = res.json()?;
+        Ok(Room {
+            id: info.room_id,
+            latest_since: None,
+            client : self.client.clone(),
+            info : self.info.clone(),
+        })
     }
 
     /// Creates a new Matrix room on the server and returns a Matrix room object
